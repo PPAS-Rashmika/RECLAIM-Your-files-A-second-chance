@@ -1,0 +1,6 @@
+<Project>
+  <!-- This is a WinForms app; the SDK also adds an unused WPF reference with incompatible WindowsBase. -->
+  <Target Name="RemoveUnusedWebViewWpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup><Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" /></ItemGroup>
+  </Target>
+</Project>

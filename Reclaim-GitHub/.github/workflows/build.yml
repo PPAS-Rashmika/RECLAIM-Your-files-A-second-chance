@@ -1,0 +1,30 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Verify and package Windows x64
+        shell: pwsh
+        run: ./build.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Reclaim-Windows-x64
+          path: dist/Reclaim-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14

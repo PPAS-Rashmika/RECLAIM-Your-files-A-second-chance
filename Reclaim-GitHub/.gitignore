@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+.build/
+artifacts/
+dist/
+.vs/
+*.zip
+.reclaim-preview-cache/
+**/.reclaim-preview-cache/
+*.user
+*.partial
