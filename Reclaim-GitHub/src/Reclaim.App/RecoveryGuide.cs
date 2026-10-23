@@ -9,8 +9,8 @@ internal static class RecoveryGuide
         2. Use Run as administrator for live drives. Disk images work without elevation.
         3. Choose a folder, drive, physical disk or raw disk image. You can type an original deleted folder path.
         4. Start Deep scan. Quick scan reads directory records and the Recycle Bin without signature carving.
-        5. Choose a category or search by name. Click a file to view Preview, Details or Hex.
-        6. Check the files you want. Recover selected saves them to another drive in category folders.
+        5. Choose a category and a format such as JPG, PNG, PDF or MP4. The format dropdown includes counts, custom extensions and No extension. Search/condition filters apply together.
+        6. Select visible checks every matching recoverable file; Clear visible unchecks that view. Checked files in other formats stay selected. Recover selected saves them to another drive in category/format folders such as Images/PNG.
 
         PREVIEW
 
@@ -25,8 +25,20 @@ internal static class RecoveryGuide
         NTFS: any extension when deleted records and data extents survive; resident, fragmented and sparse content.
         FAT12/16/32: deleted directory entries. A missing FAT chain requires a contiguous layout inference; those rows need review.
         exFAT: deleted entry sets, allocation bitmap, contiguous and surviving fragmented chains.
+        ext2/ext3/ext4: free deleted inodes with surviving block pointers/extent trees. Generated names; cleared mappings and journal reconstruction are unsupported.
         MBR / GPT: all recognized partitions in raw images and exposed Windows physical disks. GPT supports 512- and 4096-byte sectors.
         Deep signatures: JPG, PNG, GIF, BMP, PDF, ZIP / Office ZIP, EPUB, 7Z, RIFF media and common ISO media containers.
+
+        NEW RECOVERY TOOLS
+
+        Built-in results appear during scanning. Check cards and use Recover selected while the scan continues.
+        Lost partitions mode searches surviving primary NTFS/FAT/exFAT/ext volume starts without changing the partition table.
+        Camera mode reconstructs independent fMP4 moof/mdat clips using compatible surviving or supplied initialization metadata. Ordinary fragmented GoPro/DJI clusters are not guessed.
+        Recovery tools > Drive health reads Windows health/SMART counters; unavailable USB/provider counters stay unavailable.
+        Recovery tools > Validate & repair checks PNG/ZIP CRCs or mapped readability, repairs decodable photos into new PNG copies and uses an independently supplied FFmpeg engine for video remux + decode checking.
+        Chance labels describe metadata/validation evidence, not a probability or guarantee.
+        Bad-area scans retry once then skip unreadable 4 KiB units. Export stays strict and fails affected files rather than silently writing zeros.
+        Bootable recovery: the Bootable folder contains an independent rescue console and ISO builder. Microsoft ADK + matching WinPE add-on are required. No verified bootable ISO/USB is included. See Bootable/README.md.
 
         ADVANCED MODE — OPTIONAL PHOTOREC
 

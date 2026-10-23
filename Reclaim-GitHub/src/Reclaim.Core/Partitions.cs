@@ -19,7 +19,8 @@ public static class Partitions
     {
         if (reader.Length < 512) return [new(0, reader.Length, "Raw")];
         var boot = reader.Bytes(0, 512);
-        if (Identify(boot) != "Raw") return [new(0, reader.Length, Identify(boot))];
+        string initial = IdentifyAt(reader, 0, reader.Length);
+        if (initial != "Raw") return [new(0, reader.Length, initial)];
         var result = new List<Partition>();
         foreach (int sector in new[] { 512, 4096 })
         {
@@ -73,8 +74,74 @@ public static class Partitions
         void Add(long offset, long length)
         {
             if (offset < 512 || length < 512 || offset > reader.Length - length) return;
-            result.Add(new(offset, length, Identify(reader.Bytes(offset, 512))));
+            result.Add(new(offset, length, IdentifyAt(reader, offset, length)));
         }
+    }
+    public static string IdentifyAt(DiskReader reader, long offset, long length)
+    {
+        if (length < 512) return "Raw";
+        string type = Identify(reader.Bytes(offset, 512));
+        if (type != "Raw") return type;
+        if (length >= 2048)
+        {
+            byte[] s = reader.Bytes(offset + 1024, 1024);
+            if (ExtVolume.IsExt(s)) return (U32(s, 96) & 0x40) != 0 ? "ext4" : (U32(s, 92) & 4) != 0 ? "ext3" : "ext2";
+        }
+        return "Raw";
+    }
+    public static List<Partition> SearchLost(DiskReader reader, Action<ScanProgress> progress, CancellationToken token, List<string> warnings)
+    {
+        var candidates = new List<Partition>(); var seen = new HashSet<long>();
+        byte[] buffer = new byte[4 * 1024 * 1024 + 2048];
+        for (long start = 0; start < reader.Length; start += 4 * 1024 * 1024)
+        {
+            token.ThrowIfCancellationRequested();
+            int step = (int)Math.Min(4 * 1024 * 1024, reader.Length - start);
+            int n = (int)Math.Min(buffer.Length, reader.Length - start); reader.ReadExactly(start, buffer.AsSpan(0, n));
+            for (int p = 0; p < step && p + 512 <= n; p += 512)
+            {
+                token.ThrowIfCancellationRequested(); long at = start + p;
+                try
+                {
+                    string fs = Identify(buffer.AsSpan(p, 512));
+                    bool extCandidate = p + 2048 <= n && ExtVolume.IsExt(buffer.AsSpan(p + 1024, 1024));
+                    if (fs == "Raw" && !extCandidate) continue;
+                    var boot = buffer.AsSpan(p, 512).ToArray(); long length = 0;
+                    if (fs == "NTFS" && boot[510] == 0x55 && boot[511] == 0xaa)
+                    {
+                        var g = NtfsGeometry.FromBoot(boot)!; length = g.VolumeLength;
+                        long origin = at;
+                        bool HasMft(long address) => address >= 0 && address <= reader.Length - 4 && reader.Bytes(address, 4).AsSpan().SequenceEqual("FILE"u8);
+                        if (length > reader.Length - origin || !HasMft(origin + g.MftCluster * g.ClusterSize))
+                        {
+                            origin = at - length + g.SectorSize;
+                            if (origin < 0 || !HasMft(origin + g.MftCluster * g.ClusterSize)) continue;
+                            // A backup boot can identify the start, but without a primary boot
+                            // metadata revalidation is not possible. Report it, don't repair it.
+                            if (warnings.Count < 200) warnings.Add($"NTFS backup boot at {at:N0} suggests a volume at {origin:N0}; primary boot repair is required before metadata recovery."); continue;
+                        }
+                    }
+                    else if (fs is "FAT" or "exFAT" && boot[510] == 0x55 && boot[511] == 0xaa)
+                    {
+                        _ = new FatVolume(reader, at, reader.Length - at);
+                        long sectors = fs == "exFAT" ? checked((long)U64(boot, 72)) : U16(boot, 19) == 0 ? U32(boot, 32) : U16(boot, 19);
+                        int sector = fs == "exFAT" ? 1 << boot[108] : U16(boot, 11); length = checked(sectors * sector);
+                    }
+                    else if (extCandidate && U16(buffer, p + 1024 + 90) == 0)
+                    {
+                        var ext = new ExtVolume(reader, at, reader.Length - at); fs = ext.FileSystem;
+                        length = ExtVolume.DeclaredLength(buffer.AsSpan(p + 1024, 1024).ToArray());
+                    }
+                    if (length < 2048 || length > reader.Length - at || !seen.Add(at)) continue;
+                    candidates.Add(new(at, length, fs));
+                    if (candidates.Count >= 1024) { warnings.Add("Lost partition search reached its 1,024-candidate safety limit."); return Validate(candidates, warnings); }
+                }
+                catch (Exception ex) when (ex is IOException or InvalidDataException or OverflowException or ArgumentException) { }
+            }
+            progress(new("Searching for lost partitions", Math.Min(reader.Length, start + step), reader.Length, candidates.Count, $"{candidates.Count:N0} validated volume starts · no partition table changes"));
+        }
+        warnings.Add("Lost partition search is read-only. Only validated surviving primary NTFS/FAT/exFAT/ext volume structures are scanned; partition tables are not rewritten.");
+        return Validate(candidates, warnings);
     }
     private static List<Partition> Validate(List<Partition> values, List<string> warnings)
     {

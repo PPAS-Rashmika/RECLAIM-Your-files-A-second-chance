@@ -64,7 +64,7 @@ public sealed class SignatureScanner(DiskReader reader, CancellationToken token)
                         items.Add(item); onFound?.Invoke(item);
                         coveredUntil = start + length;
                     }
-                    catch (Exception ex) when (ex is IOException or OverflowException or ArgumentException) { }
+                    catch (Exception ex) when (ex is IOException or InvalidDataException or OverflowException or ArgumentException) { }
                 }
                 offset += step; done += step;
                 progress(new("Deep signature search", done, total, initialFound + items.Count, $"{Categories.Size(done)} read · {items.Count:N0} signatures"));

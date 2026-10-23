@@ -1,8 +1,12 @@
-# Reclaim 2.1.0 — Windows File Recovery
+# Reclaim 2.3.0 — Windows File Recovery
 
 A local Windows desktop application with a professional workspace, file categories, search, recovery selection and large inline preview cards. Source storage is opened **read-only**. No account or uploads are needed for built-in recovery.
 
-The 2.1.0 update replaces the separate preview pane and compact table with a full-width gallery of large file previews. Images show thumbnails; supported text, documents and archives show content snippets. Each card has its filename, size, condition and a recovery checkbox. The gallery decodes visible previews sequentially and bounds its thumbnail cache. PDF/media and other unsupported thumbnail formats show a clear format card. Double-click a card or use **Open file** for the full viewer with Preview, Details and Hex. Release builds include the .NET runtime and only application files, user instructions and required third-party notices.
+Version 2.3.0 adds an exact **file-format selector** beside search: JPG, PNG, PDF, MP4, custom extensions and **No extension**. Counts follow the current category/search/condition filters. Choose a format and use **Select visible** to check every matching recoverable file, or **Clear visible** to uncheck that view. Selections in other formats remain checked. Live results preserve the selected format. Recovery output is grouped into category/format folders such as **Images/PNG/** and **Documents/PDF/**.
+
+The 2.2.0 update adds live scan results and recovery before scanning finishes, Windows drive health/reliability counters, bad-area scan handling, read-only lost-partition search, deleted ext2/ext3/ext4 inode recovery, evidence-based chance labels and validation, fMP4 camera clip reconstruction, photo repair, an optional FFmpeg video-remux adapter and an independent WinPE rescue-console/ISO-builder kit. Exact boundaries and dependencies are listed in [the upgrade guide](docs/UPGRADE-2.2.md). A bootable ISO is **not** included or verified: the development host has no Windows ADK/WinPE add-on.
+
+Results remain a full-width gallery of large file previews. Images show thumbnails; supported text, documents and archives show snippets. Each card has its filename, size, recovery chance and a checkbox. Visible previews decode sequentially with a bounded cache. Double-click a card or use **Open file** for Preview, Details and Hex.
 
 ## Repository and release
 
@@ -17,9 +21,10 @@ Extract the complete release ZIP and double-click **Reclaim/Reclaim.exe**. Keep 
 1. For live storage, click **Run as administrator**. Raw disk images work without elevation.
 2. Select a drive, physical disk, original folder or **Disk image**. A deleted folder path can be typed. Physical disks appear below drive letters and scan all recognized partitions.
 3. Choose **Deep scan** for directory records plus signatures, or **Quick scan** for directory records and the Recycle Bin.
-4. Filter by category or search by filename/path. Preview images and text directly on the large file cards. Double-click a card for the full viewer with **Preview**, **Details** or **Hex**. Arrow keys move between cards; Space checks a card and Enter opens it.
+4. Results appear while the built-in scan runs. Choose a category and exact format, or search by filename/path. Use **Select visible** for all matching recoverable files, or check cards individually. Recover them while scanning continues. Preview images/text inline; double-click for the full viewer. Arrow keys move between cards; Space checks a card and Enter opens it.
 5. Check the required cards, then use **Recover selected**. Choose another drive. Output on the source volume is blocked; for physical disks, output on any partition of that disk is blocked.
-6. **Open saved folder** shows files grouped by category, with unique suffixes preventing collisions. A JSON report records completed saved/failed attempts and their evidence.
+6. **Open saved folder** shows files grouped by category and format, with unique suffixes preventing collisions. A JSON report records each file's category, format, completed saved/failed attempt and evidence.
+7. **Recovery tools** opens drive health, selected-file validation, saved/selected photo/video repair, bootable-media requirements and the guide. **Lost partitions · deep** searches surviving volume starts, then scans them. **Camera video · deep** adds fMP4 fragment reconstruction with surviving or supplied compatible initialization metadata.
 
 Run the app from another drive if possible. Avoid further writes to the storage that lost files. Folder junctions, symbolic links and mounted folders are rejected as live-source output locations to prevent redirection onto source storage.
 
@@ -34,9 +39,12 @@ Run the app from another drive if possible. Avoid further writes to the storage 
 | NTFS records | Any extension, including custom extensions and extensionless files, when deleted records and data extents survive. Original filenames and surviving parent paths; resident, fragmented, sparse and multi-record unnamed streams. |
 | FAT12 / FAT16 / FAT32 | Deleted short/long directory entries and surviving cluster chains. Erased short-name first characters appear as an underscore. If deletion cleared the FAT chain, a contiguous layout is inferred and marked **Needs review**; fragmented reconstruction is not guaranteed. |
 | exFAT | Deleted entry-set checksums, Unicode filenames, allocation bitmap, contiguous streams and surviving fragmented FAT chains. Missing fragmented chains are unavailable rather than invented. |
+| ext2 / ext3 / ext4 | Free deleted inodes with surviving direct/indirect block pointers or extent trees, including sparse/unwritten regions. Generated inode names; original directory names and journal recovery are unavailable. Cleared mappings are skipped. |
 | Recycle Bin | Individual files still present in the source drive's Recycle Bin, copied without removing originals. |
 | Deep signatures | JPG, PNG, GIF, BMP, PDF, ZIP, DOCX, XLSX, PPTX, EPUB, 7Z, WAV, AVI, WEBP and common MP4 / MOV / M4A / HEIC / AVIF / 3GP containers. Requires supported structures and contiguous bytes. |
 | Raw images / physical disks | All recognized MBR primary/logical and GPT partitions. GPT headers/tables are checksum-validated; 512- and 4096-byte GPT sectors are supported. Unrecognized bytes can be searched by signatures. |
+| Lost partitions | Sector search for validated surviving primary NTFS/FAT/exFAT/ext starts when the table is missing. No partition-table repair/write. Missing primary boot metadata can prevent recovery. |
+| Camera fMP4 | Reconstructs independent `moof`/`mdat` clips with compatible `ftyp`/`moov` initialization. Requires relative fragment offsets and matching track IDs. Arbitrarily interleaved conventional GoPro/DJI clusters are not reconstructed. |
 
 NTFS/FAT/exFAT allocation information limits built-in deep scanning to free clusters when readable. Otherwise it searches the bounded partition's bytes; existing files and embedded content may appear. Folder filters apply to named metadata and Recycle Bin results. **Signature results cannot be restricted to an original folder**, since that information is absent.
 
@@ -80,13 +88,19 @@ Advanced mode saves files **during the scan**, searches all source bytes with th
 
 Built-in signature candidates are limited to **2 GB**; named NTFS metadata recovery has no corresponding limit. PDF carving stops at the first EOF, so later incremental revisions may be omitted. ZIP64/split ZIP, fragmented signature reconstruction, NTFS compression/EFS decryption, alternate streams, VHD/VHDX parsing, RAID reconstruction, disk repair and forensic snapshots are not implemented. Directory/file safety limits can omit extreme or corrupt structures. Scan notes report detected limits.
 
+The fMP4 mode is the specific exception to contiguous-only signature recovery; it combines initialization bytes and independently surviving relative-offset media fragments. It does not infer arbitrary missing fragment order. ext metadata supports common group tables, direct/indirect pointers and extent trees, not `meta_bg`, bigalloc, inline/encrypted/compressed inode data or journal reconstruction. ext metadata checksums are not verified; affected candidates are marked Needs review. ext inode scans are capped at 4 million inodes and 250,000 results.
+
+Scan reads retry once, fall back to 4 KiB units and record/skip unreadable ranges. Export and preview reads remain strict: affected files fail rather than silently receiving zero-filled output. Scan placeholders can hide damaged metadata/signatures. Reports include bad ranges and lost partitions. This is not a resumable multi-pass disk imager.
+
+Recovery chance labels describe evidence, not statistical probabilities or guarantees. **Recovery tools → Validate selected file** verifies PNG chunk CRCs and ZIP member CRCs within safety limits; JPEG checks boundary markers, and other formats check mapped start/end readability. Limited checks are identified as such. Video repair remuxes surviving streams with separately supplied FFmpeg, then decode-checks the output. Photo repair re-encodes decodable raster pixels into a new PNG and can append a missing JPEG end marker. Missing/overwritten pixels, absent codec metadata and completely lost video content are not recreated.
+
 Mounted storage can change while running. Image size/timestamps, boot hashes and live deleted records are checked; these checks do not freeze free clusters or guarantee historical contents. Cancellation keeps discovered results and finished exports, removing an unfinished export. Recovery never empties the Recycle Bin.
 
 ## Demonstration and verification
 
 Tests generate **artifacts/tests/sample-ntfs.img**, a synthetic 4 MB image with resident, fragmented, sparse and reused records plus orphan PDF/DOCX signatures, and **sample-exfat.img** for exFAT directory recovery. Samples contain no personal data and are not included in the runtime release.
 
-Verification covers **25 core recovery/integrity checks, 15 gallery workflow checks, 5 virtual-gallery checks and embedded PDF/audio browser checks**. Tests compare recovered bytes, validate FAT/exFAT records, scan multiple MBR/GPT partitions, reject corrupted GPT checksums and changed images, and verify inline image/text previews, a 500-file virtual gallery, scrolling, file identity and cache reset. Live-drive recovery was **not tested on the user's physical storage**. The PhotoRec adapter is unverified with its actual executable.
+Verification includes **38 core recovery/integrity checks, 15 gallery workflow checks, 5 virtual-gallery checks, 12 format-filter/selection checks, 9 live-UI/photo-repair checks and embedded PDF/audio browser checks**. Added fixtures inject unreadable source ranges, erase partition tables, retain/delete ext inode mappings and scatter fMP4 fragments. Optional tests use a separately obtained FFmpeg engine to generate real clips and verify remuxed/reconstructed playback. Live-drive recovery was **not tested on the user's physical storage**. The PhotoRec adapter is unverified with its actual executable. WinPE ISO creation/boot requires separate ADK validation.
 
 Twelve clipping/alignment checks simulate text/geometry at 100%, 125%, 150% and 200% display densities, including large counts, button captions, matching row edges, summary-card widths, workspace edges, footer centers and unclipped source instructions. Simulations do not change Windows display settings. Alignment is also checked in an actual maximized Windows test host.
 
@@ -107,6 +121,11 @@ Native-window and embedded PDF/audio tests are opt-in because they create tempor
 Or, after building, run individual checks:
 
     dotnet .build/verification/Reclaim.UiTests.dll artifacts/tests/sample-ntfs.img --browser
+
+Optional actual Windows health-provider query (may need elevation), or real-media tests with your own FFmpeg executable:
+
+    dotnet .build/verification/Reclaim.Tests.dll artifacts/tests --health
+    dotnet .build/verification/Reclaim.Tests.dll artifacts/tests --media D:\Tools\ffmpeg.exe
 
 The button rendering/interaction checks also use a temporary invisible test host:
 

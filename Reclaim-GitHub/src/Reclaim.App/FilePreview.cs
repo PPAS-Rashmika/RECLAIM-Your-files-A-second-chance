@@ -76,7 +76,7 @@ internal sealed class FilePreview : Panel
         if (selected is null || source is null) { text.Text = "Select a file in the results to see its preview.\r\n\r\nImages, text, documents, archives and supported media appear here."; return; }
         if (view == "Details")
         {
-            text.Text = $"FILE NAME\r\n{selected.Name}\r\n\r\nORIGINAL LOCATION\r\n{selected.OriginalPath}\r\n\r\nRECOVERY METHOD\r\n{selected.Method}\r\n\r\nSIZE\r\n{selected.Size:N0} bytes\r\n\r\nCONDITION\r\n{selected.Condition}\r\n\r\nEVIDENCE\r\n{selected.Note}\r\n\r\nPARTITION\r\n{selected.Volume?.FileSystem ?? source.FileSystem} · offset {selected.Volume?.Offset ?? source.VolumeOffset:N0}"; return;
+            text.Text = $"FILE NAME\r\n{selected.Name}\r\n\r\nORIGINAL LOCATION\r\n{selected.OriginalPath}\r\n\r\nRECOVERY METHOD\r\n{selected.Method}\r\n\r\nSIZE\r\n{selected.Size:N0} bytes\r\n\r\nCONDITION\r\n{selected.Condition}\r\n\r\nRECOVERY CHANCE\r\n{selected.RecoveryChance}\r\n\r\nVALIDATION\r\n{selected.Validation}\r\n\r\nEVIDENCE\r\n{selected.Note}\r\n\r\nPARTITION\r\n{selected.Volume?.FileSystem ?? source.FileSystem} · offset {selected.Volume?.Offset ?? source.VolumeOffset:N0}"; return;
         }
         if (!selected.CanRecover) { text.Text = selected.Note; return; }
         text.Text = "Reading preview…";

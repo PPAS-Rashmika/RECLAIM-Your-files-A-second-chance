@@ -72,12 +72,32 @@ public static class RecoveryContent
         {
             if (position >= Length) return 0;
             int count = (int)Math.Min(buffer.Length, Length - position); var output = buffer[..count];
-            long initialized = item.CarvedOffset is not null ? Length : item.InitializedSize;
+            long initialized = item.CarvedOffset is not null || item.Pieces is not null ? Length : item.InitializedSize;
             int actual = (int)Math.Max(0, Math.Min(count, initialized - position));
             if (actual > 0)
             {
                 var target = output[..actual];
-                if (ntfs is not null) ntfs.Read(position, target);
+                if (item.Pieces is not null)
+                {
+                    long logical = 0; int copied = 0;
+                    foreach (var piece in item.Pieces)
+                    {
+                        if (piece.Length < 0 || logical > Length - piece.Length) throw new InvalidDataException("Invalid media piece mapping.");
+                        if (position + copied >= logical && position + copied < logical + piece.Length)
+                        {
+                            long skip = position + copied - logical;
+                            int n = (int)Math.Min(actual - copied, piece.Length - skip);
+                            if (piece.Bytes is not null) piece.Bytes.AsSpan(checked((int)skip), n).CopyTo(target.Slice(copied, n));
+                            else if (piece.Offset is long address) reader.ReadExactly(address + skip, target.Slice(copied, n));
+                            else target.Slice(copied, n).Clear();
+                            copied += n;
+                            if (copied == actual) break;
+                        }
+                        logical += piece.Length;
+                    }
+                    if (copied != actual) throw new EndOfStreamException("Media pieces are incomplete.");
+                }
+                else if (ntfs is not null) ntfs.Read(position, target);
                 else if (item.CarvedOffset is long offset) reader.ReadExactly(offset + position, target);
                 else if (item.Extents is not null)
                 {

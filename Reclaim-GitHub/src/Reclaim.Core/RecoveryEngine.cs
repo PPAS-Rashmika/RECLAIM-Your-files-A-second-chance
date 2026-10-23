@@ -6,20 +6,31 @@ namespace Reclaim.Core;
 
 public static class RecoveryEngine
 {
-    public static ScanResult Scan(ScanSource source, ScanMode mode, Action<ScanProgress>? progress, CancellationToken token)
+    public static ScanResult Scan(ScanSource source, ScanMode mode, Action<ScanProgress>? progress, CancellationToken token,
+        Action<ScanResult>? onStarted = null, Action<RecoveryItem>? onFound = null, CameraRecovery.Initialization? cameraReference = null)
     {
         var result = new ScanResult { Source = source };
+        DiskReader? reader = null;
         progress ??= _ => { };
         try
         {
-            progress(new("Checking Recycle Bin", 0, 1, 0));
-            result.Items.AddRange(RecycleBin.Scan(source, token, result.Warnings));
             token.ThrowIfCancellationRequested();
-            using var reader = new DiskReader(source);
+            reader = new DiskReader(source, true, token);
             result.SourceLength = reader.Length;
             if (source.IsImage) result.ImageLastWriteUtc = File.GetLastWriteTimeUtc(source.DevicePath);
             else if (!source.IsPhysicalDevice) result.SourceVolumeIdentity = Native.VolumeIdentity(source.VolumeRoot);
-            var partitions = Partitions.Discover(reader, result.Warnings);
+            onStarted?.Invoke(new ScanResult { Source = source, SourceLength = result.SourceLength, ImageLastWriteUtc = result.ImageLastWriteUtc, SourceVolumeIdentity = result.SourceVolumeIdentity, InProgress = true });
+            progress(new("Checking Recycle Bin", 0, 1, 0));
+            foreach (var item in RecycleBin.Scan(source, token, result.Warnings)) { result.Items.Add(item); onFound?.Invoke(item); }
+            List<Partition> partitions;
+            if (mode == ScanMode.LostPartitions)
+            {
+                partitions = Partitions.SearchLost(reader, progress, token, result.Warnings);
+                result.LostPartitions.AddRange(partitions);
+                foreach (var partition in partitions) result.Warnings.Add($"Found volume: {partition.FileSystem} · start {partition.Offset:N0} bytes · length {Categories.Size(partition.Length)}.");
+                if (partitions.Count == 0) { result.Warnings.Add("No surviving volume starts found. Searching raw bytes for signatures."); partitions = [new(0, reader.Length, "Raw")]; }
+            }
+            else partitions = Partitions.Discover(reader, result.Warnings);
             foreach (var partition in partitions)
             {
                 token.ThrowIfCancellationRequested();
@@ -29,15 +40,15 @@ public static class RecoveryEngine
                 result.BootHash = reader.Length - offset >= 512 ? SHA256.HashData(boot) : [];
                 NtfsGeometry? geometry;
                 try { geometry = NtfsGeometry.FromBoot(boot); }
-                catch (Exception ex) when (ex is IOException or OverflowException)
+                catch (Exception ex) when (ex is IOException or InvalidDataException or OverflowException)
                 { geometry = null; result.Warnings.Add("Damaged NTFS boot geometry: " + ex.Message + " Deep scan can search signatures."); }
                 try { result.VolumeLength = VolumeLength(boot, partition.Length, geometry); }
-                catch (Exception ex) when (ex is IOException or OverflowException)
+                catch (Exception ex) when (ex is IOException or InvalidDataException or OverflowException)
                 { result.VolumeLength = partition.Length; geometry = null; result.Warnings.Add("Untrusted boot length: " + ex.Message + " Using the bounded partition range."); }
                 NtfsVolume? ntfs = null;
                 FatVolume? fat = null;
                 var volume = new VolumeLayout(offset, result.VolumeLength, geometry?.ClusterSize ?? 0, partition.FileSystem, result.BootHash);
-                void Add(RecoveryItem item) { item.Volume = volume; result.Items.Add(item); }
+                void Add(RecoveryItem item) { item.Volume = volume; result.Items.Add(item); onFound?.Invoke(item); }
                 if (geometry is not null)
                 {
                     result.FileSystem = "NTFS"; result.ClusterSize = geometry.ClusterSize;
@@ -46,7 +57,7 @@ public static class RecoveryEngine
                         ntfs = new NtfsVolume(reader, offset, geometry);
                         ntfs.Scan(source.FolderFilter, progress, token, result.Warnings, Add);
                     }
-                    catch (Exception ex) when (ex is IOException or OverflowException)
+                    catch (Exception ex) when (ex is IOException or InvalidDataException or OverflowException)
                     {
                         result.Warnings.Add("NTFS metadata could not be read: " + ex.Message + " Deep scan can search whole-volume signatures.");
                         ntfs = null;
@@ -64,13 +75,25 @@ public static class RecoveryEngine
                             volume = volume with { ClusterSize = fat.ClusterSize, FileSystem = fat.FileSystem };
                             fat.Scan(source.FolderFilter, progress, token, result.Warnings, Add);
                         }
-                        catch (Exception ex) when (ex is IOException or OverflowException)
+                        catch (Exception ex) when (ex is IOException or InvalidDataException or OverflowException)
                         { fat = null; result.Warnings.Add("FAT directory metadata could not be read: " + ex.Message); }
+                    }
+                    else if (partition.FileSystem is "ext2" or "ext3" or "ext4")
+                    {
+                        try
+                        {
+                            var ext = new ExtVolume(reader, offset, partition.Length);
+                            result.ClusterSize = ext.BlockSize; result.FileSystem = ext.FileSystem;
+                            volume = volume with { ClusterSize = ext.BlockSize, FileSystem = ext.FileSystem, Length = ExtVolume.DeclaredLength(reader.Bytes(offset + 1024, 1024)) };
+                            result.VolumeLength = volume.Length;
+                            ext.Scan(source.FolderFilter, progress, token, result.Warnings, Add);
+                        }
+                        catch (Exception ex) when (ex is IOException or InvalidDataException or OverflowException) { result.Warnings.Add("ext metadata could not be read: " + ex.Message); }
                     }
                     else result.Warnings.Add("Partition at " + Categories.Size(offset) + " has no supported directory metadata. Use Deep scan for file signatures.");
                 }
                 result.Volumes.Add(volume);
-                if (mode == ScanMode.Deep)
+                if (mode != ScanMode.Quick)
                 {
                     if (source.FolderFilter.Length > 0)
                         result.Warnings.Add("Folder selection filters named results. Deep signatures search the volume because their original folder is unknown.");
@@ -95,6 +118,8 @@ public static class RecoveryEngine
                     {
                         if (!known.Contains((item.CarvedOffset!.Value, item.Size))) Add(item);
                     });
+                    if (mode == ScanMode.Camera)
+                        new CameraRecovery(reader, token).Scan([new(offset, result.VolumeLength)], progress, Add, result.Warnings, cameraReference);
                 }
             }
             if (result.Volumes.Count > 0)
@@ -105,7 +130,27 @@ public static class RecoveryEngine
             }
         }
         catch (OperationCanceledException) { result.Cancelled = true; }
+        finally
+        {
+            if (reader is not null)
+            {
+                result.BadRanges.AddRange(reader.BadRanges); reader.Dispose();
+                if (result.BadRanges.Count > 0)
+                {
+                    result.Warnings.Add($"Unreadable source areas: {result.BadRanges.Count:N0} ranges / {Categories.Size(result.BadRanges.Sum(x => x.Length))}. Scan reads retried once and skipped unreadable 4 KiB units. Export uses strict reads and fails affected files rather than silently inserting zeros.");
+                    foreach (var item in result.Items.Where(x => x.CanRecover && TouchesBadRanges(x, result.BadRanges)))
+                    { item.State = RecoveryState.AtRisk; item.ValidationFailed = true; item.Validation = "Mapped bytes overlap unreadable areas"; }
+                }
+            }
+        }
         return result;
+    }
+    public static bool TouchesBadRanges(RecoveryItem item, IReadOnlyList<ByteRange> bad)
+    {
+        IEnumerable<ByteRange> ranges = item.CarvedOffset is long at ? [new(at, item.Size)] : item.Extents ?? [];
+        if (item.Pieces is not null) ranges = ranges.Concat(item.Pieces.Where(x => x.Offset.HasValue).Select(x => new ByteRange(x.Offset!.Value, x.Length)));
+        if (item.Runs is not null && item.Volume is { } v) ranges = ranges.Concat(item.Runs.Where(x => x.PhysicalCluster.HasValue).Select(x => new ByteRange(v.Offset + x.PhysicalCluster!.Value * v.ClusterSize, x.ClusterCount * v.ClusterSize)));
+        return ranges.Any(x => bad.Any(b => x.Offset < b.Offset + b.Length && b.Offset < x.Offset + x.Length));
     }
 
     public static long FindVolume(DiskReader reader) => Partitions.Discover(reader, []).FirstOrDefault(x => x.FileSystem != "Raw")?.Offset ?? 0;
@@ -189,7 +234,7 @@ public static class RecoveryEngine
                 try
                 {
                     if (!item.CanRecover) throw new InvalidDataException(item.Note);
-                    string category = Path.Combine(folder, item.Category.ToString()); Directory.CreateDirectory(category);
+                    string category = Path.Combine(folder, item.Category.ToString(), SafeFileName(item.Format)); Directory.CreateDirectory(category);
                     string safeName = SafeFileName(item.Name);
                     // Include the unique item ID to avoid collisions without overwriting any existing file.
                     output = Path.Combine(category, Path.GetFileNameWithoutExtension(safeName) + "_" + item.Id.ToString("N")[..8] + Path.GetExtension(safeName));
@@ -204,10 +249,10 @@ public static class RecoveryEngine
                     File.Move(partial, output); partial = null;
                     saved++; status = "saved";
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
                 { failed++; error = ex.Message; errors.Add(item.Name + ": " + error); }
                 finally { if (partial is not null && File.Exists(partial)) { try { File.Delete(partial); } catch (IOException) { } } }
-                manifest.Add(new { item.Name, item.OriginalPath, item.Size, item.Method, Condition = item.Condition, item.Note, Status = status, Output = output, Error = error });
+                manifest.Add(new { item.Name, item.OriginalPath, item.Size, Category = item.Category.ToString(), item.Format, item.Method, Condition = item.Condition, item.RecoveryChance, item.Validation, item.Note, Status = status, Output = output, Error = error });
                 progress?.Invoke(new("Recovering selected files", index + 1, selected.Count, saved, item.Name));
             }
         }
@@ -215,7 +260,8 @@ public static class RecoveryEngine
         finally
         {
             File.WriteAllText(Path.Combine(folder, "recovery-report.json"), JsonSerializer.Serialize(new
-            { Source = scan.Source.Description, scan.FileSystem, Cancelled = cancelled, Saved = saved, Failed = failed, Warnings = scan.Warnings, Files = manifest }, new JsonSerializerOptions { WriteIndented = true }));
+            { Source = scan.Source.Description, FileSystem = scan.InProgress ? string.Join(" + ", selected.Select(x => x.Volume?.FileSystem ?? "Unknown").Distinct()) : scan.FileSystem,
+                ScanInProgress = scan.InProgress, Cancelled = cancelled, Saved = saved, Failed = failed, Warnings = scan.Warnings, scan.BadRanges, scan.LostPartitions, Files = manifest }, new JsonSerializerOptions { WriteIndented = true }));
         }
         return new(saved, failed, cancelled, folder, errors);
     }

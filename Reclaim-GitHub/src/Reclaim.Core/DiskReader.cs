@@ -8,15 +8,21 @@ namespace Reclaim.Core;
 // The source is opened with READ access only. No write, lock, dismount or repair control codes exist here.
 public sealed class DiskReader : IDisposable
 {
-    private readonly FileStream? file;
+    private readonly Stream? file;
+    private readonly bool tolerateErrors;
+    private readonly CancellationToken token;
+    private readonly List<ByteRange> badRanges = [];
+    public IReadOnlyList<ByteRange> BadRanges => badRanges;
+    public int ReadRetries { get; set; } = 1;
     private readonly SafeFileHandle? device;
     private readonly object gate = new();
     private readonly byte[] cache = new byte[64 * 1024];
     private long cacheOffset = -1;
     private int cacheCount;
     public long Length { get; }
-    public DiskReader(ScanSource source)
+    public DiskReader(ScanSource source, bool tolerateErrors = false, CancellationToken token = default)
     {
+        this.tolerateErrors = tolerateErrors; this.token = token;
         if (source.IsImage)
         {
             file = new FileStream(source.DevicePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.RandomAccess);
@@ -41,6 +47,13 @@ public sealed class DiskReader : IDisposable
             Native.DeviceIoControl(device, 0x90083, null, 0, [], 0, out _, IntPtr.Zero);
         }
     }
+    // Also used by fault-injection verification; the reader owns this stream.
+    public static DiskReader FromStream(Stream source, bool tolerateErrors = false, CancellationToken token = default) => new(source, tolerateErrors, token, true);
+    private DiskReader(Stream source, bool tolerateErrors, CancellationToken token, bool ownsStream)
+    {
+        if (!source.CanRead || !source.CanSeek) throw new ArgumentException("A seekable read stream is required.");
+        file = source; Length = source.Length; this.tolerateErrors = tolerateErrors; this.token = token;
+    }
 
     public byte[] Bytes(long offset, int count)
     {
@@ -60,9 +73,15 @@ public sealed class DiskReader : IDisposable
                     long pos = offset + done;
                     if (pos < cacheOffset || pos >= cacheOffset + cacheCount)
                     {
-                        cacheOffset = pos / cache.Length * cache.Length;
-                        cacheCount = (int)Math.Min(cache.Length, Length - cacheOffset);
-                        ReadDirect(cacheOffset, cache.AsSpan(0, cacheCount));
+                        long next = pos / cache.Length * cache.Length;
+                        int count = (int)Math.Min(cache.Length, Length - next);
+                        try { ReadDirect(next, cache.AsSpan(0, count)); }
+                        catch (IOException)
+                        {
+                            cacheOffset = -1; cacheCount = 0;
+                            ReadDirect(pos, output[done..]); return;
+                        }
+                        cacheOffset = next; cacheCount = count;
                     }
                     int start = (int)(pos - cacheOffset);
                     int n = Math.Min(output.Length - done, cacheCount - start);
@@ -74,6 +93,58 @@ public sealed class DiskReader : IDisposable
     }
     public void InvalidateCache() { lock (gate) { cacheOffset = -1; cacheCount = 0; } }
     private void ReadDirect(long offset, Span<byte> output)
+    {
+        token.ThrowIfCancellationRequested();
+        long readEnd = offset + output.Length;
+        if (!tolerateErrors || !badRanges.Any(x => offset < x.Offset + x.Length && x.Offset < readEnd))
+        {
+            try { ReadWithRetry(offset, output); return; }
+            catch (IOException) when (tolerateErrors) { }
+        }
+        // A failed large read is split into aligned 4 KiB units. Unreadable bytes
+        // are placeholders for scanning only; export always uses strict reads.
+        int done = 0;
+        while (done < output.Length)
+        {
+            token.ThrowIfCancellationRequested(); long pos = offset + done;
+            int count = (int)Math.Min(output.Length - done, 4096 - pos % 4096);
+            var part = output.Slice(done, count);
+            if (badRanges.Any(x => pos >= x.Offset && pos + count <= x.Offset + x.Length)) { part.Clear(); done += count; continue; }
+            try { ReadWithRetry(pos, part); }
+            catch (IOException)
+            {
+                part.Clear(); AddBad(pos / 4096 * 4096, Math.Min(4096, Length - pos / 4096 * 4096));
+            }
+            done += count;
+        }
+    }
+    private void AddBad(long offset, long length)
+    {
+        if (badRanges.Any(x => offset >= x.Offset && offset + length <= x.Offset + x.Length)) return;
+        badRanges.Add(new(offset, length));
+        badRanges.Sort((a, b) => a.Offset.CompareTo(b.Offset));
+        for (int i = badRanges.Count - 1; i > 0; i--)
+            if (badRanges[i].Offset <= badRanges[i - 1].Offset + badRanges[i - 1].Length)
+            {
+                var a = badRanges[i - 1]; var b = badRanges[i];
+                badRanges[i - 1] = new(a.Offset, Math.Max(a.Offset + a.Length, b.Offset + b.Length) - a.Offset); badRanges.RemoveAt(i);
+            }
+        // Bound memory even on extensively damaged media; larger ranges remain conservative.
+        if (badRanges.Count > 16384)
+        {
+            var a = badRanges[0]; var b = badRanges[1]; badRanges[0] = new(a.Offset, b.Offset + b.Length - a.Offset); badRanges.RemoveAt(1);
+        }
+    }
+    private void ReadWithRetry(long offset, Span<byte> output)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+            try { ReadOnce(offset, output); return; }
+            catch (IOException) when (attempt < Math.Clamp(ReadRetries, 0, 3)) { }
+        }
+    }
+    private void ReadOnce(long offset, Span<byte> output)
     {
         if (file is not null)
         {

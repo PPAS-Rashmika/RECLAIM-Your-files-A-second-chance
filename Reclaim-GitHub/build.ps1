@@ -63,6 +63,8 @@ try {
     $reclaimGuide = [IO.File]::ReadAllText((Join-Path $reclaimRoot 'docs/USER-GUIDE.md'))
     if ($FrameworkDependent) { $reclaimGuide = $reclaimGuide.Replace('The .NET runtime is included. No separate .NET installation is required.', 'Install .NET 10 Desktop Runtime (Windows x64) before starting this build.') }
     [IO.File]::WriteAllText((Join-Path $reclaimOutput 'README.md'), $reclaimGuide, [Text.UTF8Encoding]::new($false))
+    & (Join-Path $reclaimRoot 'tools/build-rescue.ps1') -OutputDirectory (Join-Path $reclaimOutput 'Bootable')
+    & (Join-Path $reclaimRoot 'tests/RescueChecks.ps1') -Executable (Join-Path $reclaimOutput 'Bootable/ReclaimRescue.exe') -Image (Join-Path $reclaimRoot 'artifacts/tests/sample-ntfs.img') -OutputDirectory (Join-Path $reclaimRoot 'artifacts/tests/rescue-console')
     $reclaimArchive = Join-Path $reclaimDist 'Reclaim-Windows-x64.zip'
     Compress-Archive -LiteralPath $reclaimOutput -DestinationPath $reclaimArchive -Force
     Write-Output "Ready: $reclaimOutput/Reclaim.exe"

@@ -201,6 +201,14 @@ internal static class Program
             data.Dispose(); disk[sector + 88] ^= 1; File.WriteAllBytes(path, disk); using var reader = new DiskReader(new(path, true)); var warnings = new List<string>();
             var rejected = Partitions.Discover(reader, warnings); Equal("Raw", rejected[0].FileSystem); Assert(warnings.Any(x => x.Contains("checksum")));
         });
+        AdvancedChecks.Run(folder, Test);
+        int media = Array.IndexOf(args, "--media");
+        if (media >= 0 && media + 1 < args.Length) MediaChecks.Run(folder, args[media + 1], Test);
+        if (args.Contains("--health")) Test("Windows drive-health provider returns explicit health/unsupported counters", () =>
+        {
+            var reports = DriveHealth.Query(null, CancellationToken.None).GetAwaiter().GetResult(); Assert(reports.Count > 0); Assert(reports.All(x => !string.IsNullOrWhiteSpace(x.Model)));
+            Console.WriteLine($"Read-only health query: {reports.Count} drives; {reports.Count(x => x.Temperature.HasValue)} expose temperature.");
+        });
         Console.WriteLine($"\n{passed} passed, {failed} failed. Sample image: {image}");
         Environment.ExitCode = failed == 0 ? 0 : 1;
     }

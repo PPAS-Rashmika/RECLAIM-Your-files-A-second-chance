@@ -6,7 +6,7 @@
     <AssemblyName>Reclaim</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>2.1.0</Version>
+    <Version>2.3.0</Version>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../Reclaim.Core/Reclaim.Core.csproj" /></ItemGroup>
   <ItemGroup>

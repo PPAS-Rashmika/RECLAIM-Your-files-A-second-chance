@@ -1,0 +1,2 @@
+Reclaim-App/Reclaim.exe filter=lfs diff=lfs merge=lfs -text
+Reclaim-App/Engines/FFmpeg/ffmpeg.exe filter=lfs diff=lfs merge=lfs -text

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Principal;
 using System.Text;
+using System.Collections.Concurrent;
 using Reclaim.Core;
 
 namespace Reclaim.App;
@@ -12,6 +13,8 @@ public sealed class MainForm : Form
     private readonly ComboBox drives = new();
     private readonly TextBox search = new();
     private readonly ComboBox condition = new();
+    private readonly ComboBox fileType = new();
+    private readonly ActionButton selectVisible = new("Select visible");
     private readonly ActionButton scan = new("Start scan", true);
     private readonly ActionButton cancel = new("Stop");
     private readonly ActionButton folderBrowse = new("Choose folder");
@@ -40,10 +43,22 @@ public sealed class MainForm : Form
     private ScanResult? result;
     private CancellationTokenSource? cancellation;
     private string category = "All types";
+    private string? selectedFormat;
+    private bool updatingFileTypes;
+    private sealed record FormatChoice(string? Extension, int Count)
+    {
+        public override string ToString() => (Extension is null ? "All formats" : Categories.FormatOf("file" + Extension)) + $" ({Count:N0})";
+    }
     private string? lastOutput;
     private string? advancedExecutable;
     private bool isImage;
     private bool busy;
+    private bool scanning;
+    private bool recovering;
+    private CancellationTokenSource? recoveryCancellation;
+    private readonly ConcurrentQueue<RecoveryItem> liveItems = new();
+    private ScanResult? liveView;
+    private DateTime liveRefresh;
     private bool settingSource;
     private readonly System.Windows.Forms.Timer uiTimer = new() { Interval = 150 };
     private ScanProgress? latestProgress;
@@ -82,7 +97,7 @@ public sealed class MainForm : Form
                 Tag = key, Navigation = true, Dark = true, Dock = DockStyle.Fill,
                 Margin = new Padding(0, 3, 0, 3), Font = Theme.Font(10)
             };
-            button.Click += (_, _) => { category = key; ApplyFilters(); UpdateCategoryButtons(); };
+            button.Click += (_, _) => { category = key; selectedFormat = null; ApplyFilters(); UpdateCategoryButtons(); };
             categoryButtons[key] = button; nav.Controls.Add(button, 0, i + 1);
         }
         sidebar.Controls.Add(nav);
@@ -91,11 +106,11 @@ public sealed class MainForm : Form
         bottom.RowStyles.Add(new(SizeType.Percent, 100)); bottom.RowStyles.Add(new(SizeType.Absolute, 48)); bottom.RowStyles.Add(new(SizeType.Absolute, 48)); bottom.RowStyles.Add(new(SizeType.Absolute, 28));
         var readOnly = Theme.Label("READ-ONLY SCANNING\nYour source stays untouched.", 9, Color.FromArgb(142, 170, 184));
         bottom.Controls.Add(readOnly, 0, 0);
-        var help = new ActionButton("Recovery guide") { Dark = true, Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 4) };
-        help.Click += (_, _) => ShowGuide(); bottom.Controls.Add(help, 0, 1);
+        var help = new ActionButton("Recovery tools") { Dark = true, Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 4) };
+        help.Click += (_, _) => ShowTools(); bottom.Controls.Add(help, 0, 1);
         var admin = new ActionButton(IsAdmin() ? "Administrator mode" : "Run as administrator") { Dark = true, Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 4) };
         admin.Enabled = !IsAdmin(); admin.Font = Theme.Font(8, FontStyle.Bold); admin.Click += (_, _) => RestartElevated(); bottom.Controls.Add(admin, 0, 2);
-        bottom.Controls.Add(Theme.Label("Reclaim 2.1.0 · Local recovery", 8, Color.FromArgb(112, 143, 161)), 0, 3);
+        bottom.Controls.Add(Theme.Label("Reclaim 2.3.0 · Local recovery", 8, Color.FromArgb(112, 143, 161)), 0, 3);
         sidebar.Controls.Add(bottom);
 
         var main = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22, 18, 22, 18), ColumnCount = 1, RowCount = 7, Margin = new Padding(0) };
@@ -133,7 +148,7 @@ public sealed class MainForm : Form
         cancel.Enabled = false; sourceLayout.Controls.Add(sourceActions, 1, 1);
         drives.DropDownStyle = ComboBoxStyle.DropDownList;
         sourceLayout.Controls.Add(new InputFrame(drives) { Name = "DriveField", Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 0) }, 0, 2);
-        mode.DropDownStyle = ComboBoxStyle.DropDownList; mode.Items.AddRange(["Deep scan", "Quick scan", "Advanced · PhotoRec"]); mode.SelectedIndex = 0;
+        mode.DropDownStyle = ComboBoxStyle.DropDownList; mode.Items.AddRange(["Deep scan", "Quick scan", "Advanced · PhotoRec", "Lost partitions · deep", "Camera video · deep"]); mode.SelectedIndex = 0;
         var sourceOptions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
         sourceOptions.ColumnStyles.Add(new(SizeType.Percent, 100)); sourceOptions.ColumnStyles.Add(new(SizeType.AutoSize));
         sourceOptions.Controls.Add(new InputFrame(mode) { Name = "ModeField", Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 0) }, 0, 0);
@@ -151,13 +166,17 @@ public sealed class MainForm : Form
         stats.Controls.Add(Stat("AVAILABLE TO RECOVER", availableValue, "Review condition before saving"), 2, 0);
         stats.Controls.Add(Stat("SELECTED", selectedValue, "0 B selected", selectedSize), 4, 0); main.Controls.Add(stats, 0, 2);
 
-        var toolbar = new TableLayoutPanel { Name = "ResultsToolbar", Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(0, 8, 0, 8), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
-        toolbar.ColumnStyles.Add(new(SizeType.Percent, 100)); toolbar.ColumnStyles.Add(new(SizeType.Absolute, 225)); toolbar.ColumnStyles.Add(new(SizeType.Absolute, 158)); toolbar.ColumnStyles.Add(new(SizeType.AutoSize));
+        var toolbar = new TableLayoutPanel { Name = "ResultsToolbar", Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(0, 8, 0, 8), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        toolbar.ColumnStyles.Add(new(SizeType.Percent, 100)); toolbar.ColumnStyles.Add(new(SizeType.Absolute, 205)); toolbar.ColumnStyles.Add(new(SizeType.Absolute, 170)); toolbar.ColumnStyles.Add(new(SizeType.Absolute, 148)); toolbar.ColumnStyles.Add(new(SizeType.AutoSize));
         toolbar.Controls.Add(resultCount, 0, 0);
         search.PlaceholderText = "Search name or original path"; toolbar.Controls.Add(new InputFrame(search) { Name = "SearchField", Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 0) }, 1, 0);
+        fileType.DropDownStyle = ComboBoxStyle.DropDownList; fileType.MaxDropDownItems = 16; fileType.DropDownWidth = 340;
+        fileType.AccessibleName = "File format"; fileType.Items.Add(new FormatChoice(null, 0)); fileType.SelectedIndex = 0;
+        toolbar.Controls.Add(new InputFrame(fileType) { Name = "FileTypeField", Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 0) }, 2, 0);
         condition.DropDownStyle = ComboBoxStyle.DropDownList; condition.Items.AddRange(["All conditions", "Named files", "Signatures", "Needs review", "Unavailable"]); condition.SelectedIndex = 0;
-        toolbar.Controls.Add(new InputFrame(condition) { Name = "ConditionField", Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 0) }, 2, 0);
-        var selectAll = new ActionButton("Select visible") { Name = "SelectVisible", Dock = DockStyle.Fill }; selectAll.Click += (_, _) => ToggleVisibleSelection(); toolbar.Controls.Add(selectAll, 3, 0);
+        toolbar.Controls.Add(new InputFrame(condition) { Name = "ConditionField", Dock = DockStyle.Fill, Margin = new Padding(0, 0, 8, 0) }, 3, 0);
+        selectVisible.Name = "SelectVisible"; selectVisible.Dock = DockStyle.Fill; selectVisible.Enabled = false;
+        selectVisible.Click += (_, _) => ToggleVisibleSelection(); toolbar.Controls.Add(selectVisible, 4, 0);
         main.Controls.Add(toolbar, 0, 3);
 
         var results = new Panel { Name = "ResultsWorkspace", Dock = DockStyle.Fill, BackColor = Theme.Background, Margin = Padding.Empty };
@@ -185,6 +204,8 @@ public sealed class MainForm : Form
         tips.SetToolTip(mode, "Deep: NTFS / FAT / exFAT records plus signatures. Advanced: PhotoRec saves more supported formats while scanning to a separate drive.");
         tips.SetToolTip(location, "You can type the original folder path even if that folder has been deleted.");
         tips.SetToolTip(imageBrowse, "Read-only .img, .dd, .raw or .bin image; all recognized MBR / GPT partitions are scanned.");
+        tips.SetToolTip(fileType, "Filter by filename extension, such as JPG, PNG, PDF or MP4. Counts match the category, search and condition filters. No extension includes files without a suffix.");
+        tips.SetToolTip(selectVisible, "Select all recoverable files matching the current filters. Selections in other formats stay selected.");
     }
     private Card Stat(string title, Label value, string subtitle, Label? subtitleLabel = null)
     {
@@ -222,15 +243,21 @@ public sealed class MainForm : Form
         drives.SelectedIndexChanged += (_, _) => { if (!settingSource && drives.SelectedItem is DriveChoice choice) SetSource(choice.Root, false); };
         location.TextChanged += (_, _) => { if (!busy && !settingSource) { ClearResults(); UpdateModeHint(); } };
         mode.SelectedIndexChanged += (_, _) => UpdateModeHint();
-        scan.Click += async (_, _) => await StartScan(); cancel.Click += (_, _) => { cancellation?.Cancel(); cancel.Enabled = false; status.Text = "Stopping after the current read…"; };
+        scan.Click += async (_, _) => await StartScan(); cancel.Click += (_, _) => { cancellation?.Cancel(); recoveryCancellation?.Cancel(); cancel.Enabled = false; status.Text = "Stopping after the current read…"; };
         recover.Click += async (_, _) => await RecoverSelected();
         search.TextChanged += (_, _) => ApplyFilters(); condition.SelectedIndexChanged += (_, _) => ApplyFilters();
+        fileType.SelectedIndexChanged += (_, _) =>
+        {
+            if (updatingFileTypes) return;
+            selectedFormat = (fileType.SelectedItem as FormatChoice)?.Extension; ApplyFilters();
+        };
+        fileType.DropDownClosed += (_, _) => ApplyFilters(true);
         inspect.Click += (_, _) => InspectFile(); openFile.Click += (_, _) => OpenFile();
         gallery.CurrentItemChanged += (_, _) => UpdateDetails();
         gallery.ItemActivated += (_, _) => OpenFile();
         gallery.CheckRequested += (item, value) =>
         {
-            if (busy || !item.CanRecover) return;
+            if (recovering || busy && !scanning || !item.CanRecover) return;
             if (value) selected.Add(item.Id); else selected.Remove(item.Id);
             UpdateSelection();
         };
@@ -242,7 +269,7 @@ public sealed class MainForm : Form
         };
         FormClosing += (_, e) =>
         {
-            if (busy) { e.Cancel = true; cancellation?.Cancel(); status.Text = "Stopping safely. Close the app when the operation finishes."; }
+            if (busy || recovering) { e.Cancel = true; cancellation?.Cancel(); recoveryCancellation?.Cancel(); status.Text = "Stopping safely. Close the app when the operation finishes."; }
         };
     }
     private sealed record DriveChoice(string Root, string Display) { public override string ToString() => Display; }
@@ -290,49 +317,63 @@ public sealed class MainForm : Form
         if (busy) return;
         ScanSource source;
         try { source = GetSource(); }
-        catch (Exception ex) when (ex is IOException or ArgumentException or InvalidOperationException) { ShowError(ex.Message); return; }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or InvalidOperationException) { ShowError(ex.Message); return; }
         // Disk images can be scanned without elevation. A live drive needs a read-only raw handle.
         if (!source.IsImage && !IsAdmin()) { ShowError("For drive scanning, click 'Restart as administrator' in the sidebar. Disk images can be scanned without administrator access."); return; }
         if (mode.SelectedIndex == 2) { await StartAdvanced(source); return; }
-        ClearResults(); SetBusy(true); cancellation = new CancellationTokenSource();
-        ScanMode selectedMode = mode.SelectedIndex == 0 ? ScanMode.Deep : ScanMode.Quick;
+        CameraRecovery.Initialization? cameraReference = null;
+        if (mode.SelectedIndex == 4)
+        {
+            using var reference = new OpenFileDialog { Title = "Optional compatible fMP4 camera reference · Cancel to use surviving initialization metadata", Filter = "Camera reference|*.mp4;*.mov;*.m4v|All files|*.*" };
+            if (reference.ShowDialog(this) == DialogResult.OK)
+            {
+                try { cameraReference = CameraRecovery.LoadInitialization(reference.FileName); }
+                catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException) { ShowError(ex.Message); return; }
+            }
+        }
+        ClearResults(); scanning = true; SetBusy(true); cancellation = new CancellationTokenSource();
+        ScanMode selectedMode = mode.SelectedIndex switch { 0 => ScanMode.Deep, 1 => ScanMode.Quick, 3 => ScanMode.LostPartitions, _ => ScanMode.Camera };
         try
         {
-            result = await Task.Run(() => RecoveryEngine.Scan(source, selectedMode, p => Interlocked.Exchange(ref latestProgress, p), cancellation.Token));
+            var completed = await Task.Run(() => RecoveryEngine.Scan(source, selectedMode, p => Interlocked.Exchange(ref latestProgress, p), cancellation.Token,
+                view => Interlocked.Exchange(ref liveView, view), item => liveItems.Enqueue(item), cameraReference));
+            DrainLiveResults(true); result = completed;
             ApplyFilters(); UpdateCategoryButtons(); UpdateStats();
             status.Text = result.Cancelled ? "Scan stopped · discovered results are retained" : $"Scan complete · {result.FileSystem} · {result.Items.Count:N0} files found";
             progressBar.Value = result.Cancelled ? 0 : 100;
             if (result.Warnings.Count > 0) ShowText("Scan notes", string.Join("\r\n\r\n", result.Warnings));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or OverflowException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or OverflowException)
         { status.Text = "Scan could not finish"; ShowError(ex.Message); }
-        finally { latestProgress = null; cancellation.Dispose(); cancellation = null; SetBusy(false); }
+        finally { DrainLiveResults(true); scanning = false; latestProgress = null; cancellation.Dispose(); cancellation = null; SetBusy(false); }
     }
     private async Task RecoverSelected()
     {
-        if (busy || result is null) return;
+        if (recovering || busy && !scanning || result is null) return;
         var items = result.Items.Where(x => selected.Contains(x.Id) && x.CanRecover).ToList();
         if (items.Count == 0) return;
         using var dialog = new FolderBrowserDialog { Description = "Choose where to save recovered files. Use a different drive or USB device.", UseDescriptionForTitle = true };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         try { RecoveryEngine.ValidateDestination(result.Source, dialog.SelectedPath); }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException) { ShowError(ex.Message); return; }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or InvalidOperationException or ArgumentException) { ShowError(ex.Message); return; }
         int risky = items.Count(x => x.State is RecoveryState.AtRisk or RecoveryState.Signature);
         if (risky > 0 && MessageBox.Show(this, $"{risky:N0} selected files need review or were found by signatures. Their contents may be incomplete or changed.\n\nSave {items.Count:N0} selected files ({Categories.Size(items.Sum(x => x.Size))}) to:\n{dialog.SelectedPath}", "Review selected recovery", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
-        SetBusy(true); cancellation = new CancellationTokenSource();
+        bool duringScan = scanning; recovering = true; recoveryCancellation = new CancellationTokenSource();
+        if (!duringScan) SetBusy(true); else { recover.Enabled = false; gallery.SetSelectionEnabled(false); }
         try
         {
             var scanResult = result;
-            var outcome = await Task.Run(() => RecoveryEngine.Recover(scanResult, items, dialog.SelectedPath, p => Interlocked.Exchange(ref latestProgress, p), cancellation.Token));
+            var outcome = await Task.Run(() => RecoveryEngine.Recover(scanResult, items, dialog.SelectedPath,
+                duringScan ? null : p => Interlocked.Exchange(ref latestProgress, p), recoveryCancellation.Token));
             lastOutput = outcome.Folder; openOutput.Enabled = true;
             status.Text = $"{outcome.Saved:N0} saved · {outcome.Failed:N0} failed" + (outcome.Cancelled ? " · stopped" : "");
             progressBar.Value = outcome.Cancelled ? 0 : 100;
             ShowText("Recovery results", $"Saved: {outcome.Saved:N0}\r\nFailed: {outcome.Failed:N0}\r\nStopped: {outcome.Cancelled}\r\n\r\nFiles are grouped by type in:\r\n{outcome.Folder}\r\n\r\nA recovery-report.json records every completed attempt. Check recovered files before relying on them." +
                 (outcome.Errors.Count > 0 ? "\r\n\r\n" + string.Join("\r\n", outcome.Errors.Take(20)) : ""));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or OperationCanceledException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or OperationCanceledException)
         { status.Text = "Recovery did not finish"; ShowError(ex.Message); }
-        finally { latestProgress = null; cancellation.Dispose(); cancellation = null; SetBusy(false); }
+        finally { recovering = false; recoveryCancellation.Dispose(); recoveryCancellation = null; if (!scanning) { latestProgress = null; SetBusy(false); } else SetBusy(true); }
     }
     private async Task StartAdvanced(ScanSource source)
     {
@@ -346,7 +387,7 @@ public sealed class MainForm : Form
         using var destination = new FolderBrowserDialog { Description = "Advanced recovery saves files WHILE scanning. Choose a folder on a different drive with enough free space. Original folder filtering is unavailable.", UseDescriptionForTitle = true };
         if (destination.ShowDialog(this) != DialogResult.OK) return;
         try { RecoveryEngine.ValidateDestination(source, destination.SelectedPath); }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException) { ShowError(ex.Message); return; }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or InvalidOperationException or ArgumentException) { ShowError(ex.Message); return; }
         ClearResults(); SetBusy(true); cancellation = new CancellationTokenSource();
         try
         {
@@ -357,43 +398,71 @@ public sealed class MainForm : Form
             progressBar.Value = result.Cancelled ? 0 : 100;
             ShowText("Advanced recovery results", $"{result.Items.Count:N0} files saved and grouped by type in:\r\n{outcome.Folder}\r\n\r\nSelect a file to preview it. These files are already saved; Recover selected creates another copy.\r\n\r\n" + string.Join("\r\n\r\n", result.Warnings));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception or OperationCanceledException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception or OperationCanceledException)
         { status.Text = "Advanced scan could not finish"; ShowError(ex.Message); }
         finally { latestProgress = null; cancellation.Dispose(); cancellation = null; SetBusy(false); }
     }
     private void SetBusy(bool value)
     {
+        value |= recovering;
         busy = value; scan.Enabled = !value; cancel.Enabled = value;
         location.Enabled = !value; folderBrowse.Enabled = !value; imageBrowse.Enabled = !value; drives.Enabled = !value; mode.Enabled = !value;
-        recover.Enabled = !value && selected.Count > 0; inspect.Enabled = !value && CurrentItem()?.CanRecover == true;
-        openFile.Enabled = !value && CurrentItem() is not null; gallery.SetSelectionEnabled(!value);
-        if (value) { progressBar.Value = 0; status.Text = "Preparing…"; }
+        bool interactive = !recovering && (!value || scanning);
+        recover.Enabled = interactive && selected.Count > 0; inspect.Enabled = interactive && CurrentItem()?.CanRecover == true;
+        openFile.Enabled = interactive && CurrentItem() is not null; gallery.SetSelectionEnabled(interactive);
+        UpdateSelection();
+        if (value && !scanning) { progressBar.Value = 0; status.Text = "Preparing…"; }
     }
     private void ShowProgress()
     {
+        if (scanning && DateTime.UtcNow >= liveRefresh) { DrainLiveResults(false); liveRefresh = DateTime.UtcNow.AddMilliseconds(500); }
         var p = Interlocked.Exchange(ref latestProgress, null);
         if (p is null || !busy) return;
         status.Text = p.Phase + " · " + (p.Detail.Length > 0 ? p.Detail : $"{p.Done:N0} / {p.Total:N0}");
         progressBar.Value = (int)(p.Fraction * 100);
-        if (p.Phase != "Recovering selected files") foundValue.Text = p.Found.ToString("N0");
+        if (p.Phase != "Recovering selected files") foundValue.Text = (scanning ? result?.Items.Count ?? 0 : p.Found).ToString("N0");
+    }
+    private void DrainLiveResults(bool all)
+    {
+        var view = Interlocked.Exchange(ref liveView, null); if (view is not null) result = view;
+        if (result is null) return;
+        int count = 0;
+        while ((all || count < 4000) && liveItems.TryDequeue(out var item)) { result.Items.Add(item); count++; }
+        if (count > 0) { ApplyFilters(true); UpdateCategoryButtons(); UpdateStats(); }
     }
     private void ClearResults()
     {
-        result = null; selected.Clear(); visibleItems = []; gallery.SetItems(null, visibleItems, selected.Contains); empty.Visible = true;
+        result = null; liveView = null; liveItems.Clear(); selectedFormat = null; selected.Clear(); visibleItems = []; UpdateFileTypes([]); gallery.SetItems(null, visibleItems, selected.Contains); empty.Visible = true;
         UpdateCategoryButtons(); UpdateStats(); UpdateDetails(); resultCount.Text = "Discovered files";
     }
-    private void ApplyFilters()
+    private void ApplyFilters(bool preservePosition = false)
     {
         string query = search.Text.Trim();
-        visibleItems = (result?.Items ?? []).Where(x => (category == "All types" || x.Category.ToString() == category)
+        var matching = (result?.Items ?? []).Where(x => (category == "All types" || x.Category.ToString() == category)
             && (query.Length == 0 || x.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || x.OriginalPath.Contains(query, StringComparison.OrdinalIgnoreCase))
             && (condition.SelectedIndex switch { 1 => x.CarvedOffset is null && x.RecoveredPath is null, 2 => x.State == RecoveryState.Signature, 3 => x.State == RecoveryState.AtRisk, 4 => !x.CanRecover, _ => true }))
-            .OrderBy(x => x.Category).ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        gallery.SetItems(result, visibleItems, selected.Contains); empty.Visible = visibleItems.Count == 0;
+            .ToList();
+        UpdateFileTypes(matching);
+        visibleItems = matching.Where(x => selectedFormat is null || Categories.ExtensionOf(x.Name).Equals(selectedFormat, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(x => x.Category).ThenBy(x => Categories.ExtensionOf(x.Name), StringComparer.OrdinalIgnoreCase).ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        gallery.SetItems(result, visibleItems, selected.Contains, preservePosition); empty.Visible = visibleItems.Count == 0;
         empty.Tag = visibleItems.Count == 0 ? null : "SkipPreview";
         empty.Text = result is null ? "Choose a location, then start a scan.\nDeleted files will appear here, grouped by type." : "No files match this view.\nTry another category, clear the filters, or scan another location.";
         resultCount.Text = result is null ? "Discovered files" : $"{visibleItems.Count:N0} files in this view";
-        UpdateDetails();
+        UpdateDetails(); UpdateSelection();
+    }
+    private void UpdateFileTypes(IReadOnlyList<RecoveryItem> matching)
+    {
+        if (fileType.DroppedDown) return;
+        var choices = new List<FormatChoice> { new(null, matching.Count) };
+        choices.AddRange(matching.GroupBy(x => Categories.ExtensionOf(x.Name), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x.Key.Length == 0 ? 1 : 0).ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => new FormatChoice(x.Key, x.Count())));
+        if (selectedFormat is not null && !choices.Any(x => string.Equals(x.Extension, selectedFormat, StringComparison.OrdinalIgnoreCase))) choices.Add(new(selectedFormat, 0));
+        int index = choices.FindIndex(x => string.Equals(x.Extension, selectedFormat, StringComparison.OrdinalIgnoreCase));
+        if (fileType.Items.Cast<FormatChoice>().SequenceEqual(choices) && fileType.SelectedIndex == index) return;
+        updatingFileTypes = true; fileType.BeginUpdate();
+        try { fileType.Items.Clear(); fileType.Items.AddRange(choices.Cast<object>().ToArray()); fileType.SelectedIndex = index; }
+        finally { fileType.EndUpdate(); updatingFileTypes = false; }
     }
     private void UpdateCategoryButtons()
     {
@@ -413,11 +482,14 @@ public sealed class MainForm : Form
     {
         selectedValue.Text = selected.Count.ToString("N0");
         selectedSize.Text = Categories.Size(result?.Items.Where(x => selected.Contains(x.Id)).Sum(x => x.Size) ?? 0) + " selected";
-        recover.Enabled = !busy && selected.Count > 0; gallery.Invalidate();
+        recover.Enabled = !recovering && (!busy || scanning) && selected.Count > 0; gallery.Invalidate();
+        var available = visibleItems.Where(x => x.CanRecover).ToList();
+        selectVisible.Enabled = !recovering && (!busy || scanning) && available.Count > 0;
+        selectVisible.Text = available.Count > 0 && available.All(x => selected.Contains(x.Id)) ? "Clear visible" : "Select visible";
     }
     private void ToggleVisibleSelection()
     {
-        if (busy) return;
+        if (recovering || busy && !scanning) return;
         var available = visibleItems.Where(x => x.CanRecover).ToList();
         bool remove = available.Count > 0 && available.All(x => selected.Contains(x.Id));
         foreach (var item in available) { if (remove) selected.Remove(item.Id); else selected.Add(item.Id); }
@@ -426,22 +498,24 @@ public sealed class MainForm : Form
     private RecoveryItem? CurrentItem() => gallery.CurrentItem;
     private void UpdateDetails()
     {
-        var item = CurrentItem(); inspect.Enabled = !busy && item?.CanRecover == true; openFile.Enabled = !busy && item is not null;
+        var item = CurrentItem(); bool interactive = !recovering && (!busy || scanning); inspect.Enabled = interactive && item?.CanRecover == true; openFile.Enabled = interactive && item is not null;
         detailTitle.Text = item is null ? "Select a file to see its recovery details" : item.Name + "  ·  " + Categories.Size(item.Size) + "  ·  " + item.Method;
-        detailNote.Text = item?.Note ?? "Check a card to recover it. Double-click a file to open its full viewer.";
+        detailNote.Text = item is null ? "Check a card to recover it. Double-click a file to open its full viewer." : item.RecoveryChance + " · " + item.Validation + " · " + item.Note;
         tips.SetToolTip(detailNote, detailNote.Text);
 
     }
     private void UpdateModeHint()
     {
-        modeHint.Text = mode.SelectedIndex == 2 ? "Advanced · requires an extracted PhotoRec 7.2 engine. Select photorec_win.exe when starting; files save during the scan."
+        modeHint.Text = mode.SelectedIndex == 3 ? "Lost partitions · read-only sector search for surviving NTFS / FAT / exFAT / ext volume starts, then deep recovery."
+            : mode.SelectedIndex == 4 ? "Camera video · deep signatures + fMP4 fragment reconstruction. Optional compatible fMP4 reference; arbitrary camera clusters cannot be inferred."
+            : mode.SelectedIndex == 2 ? "Advanced · requires an extracted PhotoRec 7.2 engine. Select photorec_win.exe when starting; files save during the scan."
             : mode.SelectedIndex == 0
-            ? "Deep scan · NTFS / FAT / exFAT records + file signatures. Signature results search the volume; original folders are unknown."
-            : "Quick scan · NTFS / FAT / exFAT directory records + Recycle Bin. All extensions when metadata survives.";
+            ? "Deep scan · NTFS / FAT / exFAT / ext records + signatures. Results appear while scanning. Signature folders are unknown."
+            : "Quick scan · NTFS / FAT / exFAT / ext directory records + Recycle Bin. Results appear while scanning.";
     }
     private void OpenFile()
     {
-        var item = CurrentItem(); if (busy || item is null || result is null) return;
+        var item = CurrentItem(); if (recovering || busy && !scanning || item is null || result is null) return;
         using var viewer = new Form { Text = item.Name + " — Reclaim", StartPosition = FormStartPosition.CenterParent,
             Size = new Size(960, 760), MinimumSize = new Size(620, 460), BackColor = Color.White, Font = Theme.Font() };
         var content = new FilePreview { Dock = DockStyle.Fill, Margin = Padding.Empty };
@@ -465,9 +539,15 @@ public sealed class MainForm : Form
             }
             ShowText("File inspection", text.ToString(), true);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { ShowError(ex.Message); }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException) { ShowError(ex.Message); }
     }
     private void ShowGuide() => ShowText("Recovery guide", RecoveryGuide.Text);
+    private void ShowTools()
+    {
+        ScanSource? source = result?.Source;
+        if (source is null) { try { source = GetSource(); } catch (Exception ex) when (ex is IOException or InvalidDataException or ArgumentException or InvalidOperationException) { } }
+        using var tools = new RecoveryTools(source, result, CurrentItem()); tools.ShowDialog(this); UpdateDetails(); gallery.Invalidate();
+    }
     private void RestartElevated()
     {
         if (busy) return;

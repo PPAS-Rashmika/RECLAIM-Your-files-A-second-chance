@@ -1,4 +1,4 @@
-# Reclaim 2.1.0 — Windows File Recovery
+# Reclaim 2.3.0 — Windows File Recovery
 
 Extract the complete ZIP into a folder and double-click **Reclaim.exe**. Keep the Licenses folder with the application. Windows x64 is required. The .NET runtime is included. No separate .NET installation is required.
 
@@ -8,11 +8,22 @@ Extract the complete ZIP into a folder and double-click **Reclaim.exe**. Keep th
 2. Choose a folder, drive, physical disk or **Disk image**.
 3. Use **Quick scan** for deleted directory records and Recycle Bin files. Folder selection filters results whose original paths survive.
 4. **Deep scan** also searches the selected volume's free space using file signatures. Signature results can come from other folders; their original folders and deletion status are unknown. If allocation data cannot be read, the whole volume is searched. Selecting a physical disk scans its recognized partitions. Other disks are not automatically scanned.
-5. View large image thumbnails and supported text/document/archive snippets directly in the file list. Each card shows the filename, size and condition. Use categories, search and condition filters to narrow results. Some formats show a format card instead of a visual thumbnail.
-6. Check the required cards and choose **Recover selected**. Save them to a different drive. **Open saved folder** opens the output. Arrow keys move between cards and Space checks the current card.
+5. Results appear while built-in scanning continues. Choose a category, then a specific format such as **JPG, PNG, PDF or MP4** in the **All formats** dropdown. Each format shows a count. Custom extensions and **No extension** are included. Search and condition filters work together with the format filter.
+6. Use **Select visible** to check all recoverable files matching the current filters, or check individual preview cards. **Clear visible** unchecks that view; selections in other formats remain checked. The Selected total includes all checked formats. Choose **Recover selected** and save to another drive. Output is organized into folders such as **Images/PNG/** and **Documents/PDF/**. Arrow keys move between cards and Space checks the current card.
 7. Double-click a card, press Enter or choose **Open file** for the full viewer, including PDF/media playback, **Details** and **Hex**.
+8. **Lost partitions · deep** searches surviving NTFS/FAT/exFAT/ext volume starts without changing the partition table. **Camera video · deep** reconstructs independent fMP4 clips with compatible surviving/reference initialization; conventional arbitrary camera fragmentation is not supported.
 
-Source storage is opened read-only. Recovery creates category folders and a JSON report in the chosen destination. Avoid further writes to the storage that lost files, and run Reclaim from another drive when possible.
+## Recovery tools
+
+Open **Recovery tools** in the sidebar:
+
+- **Drive health:** selected disk or All drives; health/SMART counters exposed by Windows. Run as administrator if required. Missing counters show Unavailable.
+- **Validate & repair:** check PNG/ZIP integrity or surviving mapped bytes. Repair selected or saved photos into a new PNG. Video remux/repair requires a separately obtained **ffmpeg.exe**, selectable with **Choose FFmpeg**. The output is decode-checked. Missing pixels/video/codec metadata are not recreated.
+- **Bootable recovery:** check requirements, then use **Create rescue ISO** and choose an output folder. The builder needs administrator access, Windows ADK Deployment Tools and its matching WinPE add-on. It creates a new media folder and never formats a USB. This release supplies a rescue console and builder, **not a verified bootable ISO/USB**. See Bootable/README.md.
+
+ext2/ext3/ext4 deleted files are supported when their inode mappings survive; generated names replace lost filenames. APFS/HFS+/ReFS metadata recovery is not included. Scan reads retry once and skip recorded unreadable 4 KiB areas; strict recovery fails unreadable files instead of silently filling them with zeros.
+
+Source storage is opened read-only. Recovery creates category/format folders and a JSON report in the chosen destination. Avoid further writes to the storage that lost files, and run Reclaim from another drive when possible.
 
 ## Previews and optional engine
 
@@ -22,7 +33,7 @@ Images, text, document text and ZIP contents can be previewed. PDF/audio/video u
 
 ## Limits
 
-Recovery is not guaranteed. Overwritten bytes, SSD TRIM, encryption and lost metadata can make deleted data unrecoverable. Check previews and recovered contents. Signature reconstruction requires supported contiguous structures; fragmented signatures, NTFS compression/EFS and RAID reconstruction are not supported. Built-in signature candidates are limited to 2 GB. Phones/MTP and cloud/network folders do not expose the raw storage needed for this recovery method.
+Recovery is not guaranteed. Overwritten bytes, SSD TRIM, encryption and lost metadata can make deleted data unrecoverable. Chance labels describe evidence, not statistical probabilities. General signatures require supported contiguous structures; fMP4 mode is a specific limited exception. NTFS compression/EFS and RAID reconstruction are unsupported. Built-in general signature candidates are limited to 2 GB. Phones/MTP and cloud/network folders do not expose the raw storage needed here. Scans cannot yet be saved/resumed after closing the app.
 
 Third-party license and notice files are in **Licenses/**.
 

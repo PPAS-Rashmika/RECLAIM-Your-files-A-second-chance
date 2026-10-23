@@ -45,7 +45,7 @@ internal sealed class FileGallery : Control
         AccessibleRole = AccessibleRole.List; AccessibleName = "Recovered files with inline previews";
         AccessibleDescription = "Arrow keys move between files. Space selects a file for recovery. Enter opens the file viewer.";
     }
-    public void SetItems(ScanResult? scan, IReadOnlyList<RecoveryItem> visible, Func<Guid, bool> checkedState)
+    public void SetItems(ScanResult? scan, IReadOnlyList<RecoveryItem> visible, Func<Guid, bool> checkedState, bool preservePosition = false)
     {
         Guid? previous = CurrentItem?.Id;
         if (!ReferenceEquals(source, scan))
@@ -57,7 +57,7 @@ internal sealed class FileGallery : Control
         items = visible; isChecked = checkedState;
         current = previous is Guid id ? items.ToList().FindIndex(x => x.Id == id) : -1;
         if (current < 0 && items.Count > 0) current = 0;
-        hovered = -1; tooltip.SetToolTip(this, null); scroll.Value = 0;
+        hovered = -1; tooltip.SetToolTip(this, null); if (!preservePosition) scroll.Value = 0;
         UpdateGeometry(); Invalidate(); StartLoading(); CurrentItemChanged?.Invoke(this, EventArgs.Empty);
     }
     public void SetSelectionEnabled(bool value) { selectionEnabled = value; Invalidate(); }
@@ -221,10 +221,10 @@ internal sealed class FileGallery : Control
         var name = new Rectangle(card.X + LogicalToDeviceUnits(12), card.Y + LogicalToDeviceUnits(180), card.Width - LogicalToDeviceUnits(24), LogicalToDeviceUnits(40));
         TextRenderer.DrawText(g, item.Name, nameFont, name, Theme.Ink, TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         var info = new Rectangle(name.X, card.Y + LogicalToDeviceUnits(225), name.Width, LogicalToDeviceUnits(18));
-        TextRenderer.DrawText(g, $"{Categories.Size(item.Size)}  ·  {item.Category}", smallFont, info, Theme.Muted, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        TextRenderer.DrawText(g, $"{Categories.Size(item.Size)}  ·  {item.Format}", smallFont, info, Theme.Muted, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         info.Y = card.Y + LogicalToDeviceUnits(248);
-        Color state = item.State is RecoveryState.AtRisk ? Color.FromArgb(166, 105, 21) : item.CanRecover ? Theme.Accent : Color.FromArgb(170, 66, 66);
-        TextRenderer.DrawText(g, item.Condition, smallFont, info, state, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        Color state = item.ValidationFailed ? Color.FromArgb(170, 66, 66) : item.State is RecoveryState.AtRisk ? Color.FromArgb(166, 105, 21) : item.CanRecover ? Theme.Accent : Color.FromArgb(170, 66, 66);
+        TextRenderer.DrawText(g, item.RecoveryChance, smallFont, info, state, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         if (Focused && index == current && ShowFocusCues) ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(card, -4, -4), Theme.Accent, Color.White);
     }
     private int HitTest(Point point)
@@ -259,7 +259,7 @@ internal sealed class FileGallery : Control
     {
         base.OnMouseMove(e); int index = HitTest(e.Location); if (index == hovered) return;
         hovered = index; Cursor = index >= 0 ? Cursors.Hand : Cursors.Default; Invalidate();
-        tooltip.SetToolTip(this, index >= 0 ? items[index].Name + "\n" + items[index].OriginalPath + "\n" + items[index].Condition : null);
+        tooltip.SetToolTip(this, index >= 0 ? items[index].Name + "\n" + items[index].OriginalPath + "\n" + items[index].Condition + "\n" + items[index].RecoveryChance + "\n" + items[index].Validation : null);
     }
     protected override void OnMouseLeave(EventArgs e) { hovered = -1; Invalidate(); base.OnMouseLeave(e); }
     protected override bool IsInputKey(Keys keyData) => keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.PageDown or Keys.PageUp or Keys.Space or Keys.Enter || base.IsInputKey(keyData);

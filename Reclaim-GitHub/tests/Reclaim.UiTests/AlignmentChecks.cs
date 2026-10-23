@@ -20,7 +20,7 @@ internal static partial class Program
         }
         SameRow(Named("LocationField"), Field<Control>(form, "folderBrowse"), Field<Control>(form, "imageBrowse"), Field<Control>(form, "scan"), Field<Control>(form, "cancel"));
         SameRow(Named("DriveField"), Named("ModeField"), Named("RefreshDrives"));
-        SameRow(Field<Control>(form, "resultCount"), Named("SearchField"), Named("ConditionField"), Named("SelectVisible"));
+        SameRow(Field<Control>(form, "resultCount"), Named("SearchField"), Named("FileTypeField"), Named("ConditionField"), Named("SelectVisible"));
         SameRow(Field<Control>(form, "openOutput"), Field<Control>(form, "recover"));
         var status = Bounds(Field<Control>(form, "status")); var recover = Bounds(Field<Control>(form, "recover"));
         if (Math.Abs(status.Top + status.Height / 2 - recover.Top - recover.Height / 2) > 1) throw new Exception("Footer status and actions are not vertically centered together.");

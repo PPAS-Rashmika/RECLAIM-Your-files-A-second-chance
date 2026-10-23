@@ -1,10 +1,11 @@
 namespace Reclaim.Core;
 
 public enum FileCategory { Images, Videos, Audio, Documents, Archives, Other }
-public enum ScanMode { Quick, Deep }
+public enum ScanMode { Quick, Deep, LostPartitions, Camera }
 public enum RecoveryState { Metadata, Resident, Signature, AtRisk, Unsupported }
 public sealed record DataRun(long VirtualCluster, long ClusterCount, long? PhysicalCluster);
 public sealed record ByteRange(long Offset, long Length);
+public sealed record ContentPiece(long Length, long? Offset = null, byte[]? Bytes = null);
 public sealed record VolumeLayout(long Offset, long Length, int ClusterSize, string FileSystem, byte[] BootHash);
 
 public sealed class RecoveryItem
@@ -15,6 +16,7 @@ public sealed class RecoveryItem
     public required long Size { get; init; }
     public required string Method { get; init; }
     public FileCategory Category => Categories.Of(Name);
+    public string Format => Categories.FormatOf(Name);
     public RecoveryState State { get; set; }
     public string Note { get; set; } = "";
     public DateTime? Modified { get; init; }
@@ -28,6 +30,16 @@ public sealed class RecoveryItem
     public string? RecoveredPath { get; init; }
     public DateTime? RecoveredLastWriteUtc { get; init; }
     public List<ByteRange>? Extents { get; init; }
+    public List<ContentPiece>? Pieces { get; init; }
+    public string Validation { get; set; } = "Not checked";
+    public bool ValidationFailed { get; set; }
+    public string RecoveryChance => !CanRecover ? "Unavailable" : ValidationFailed ? "Low · validation failed" : State switch
+    {
+        RecoveryState.Resident => "Good · retained content",
+        RecoveryState.Metadata => "Good · allocation clear",
+        RecoveryState.Signature => "Possible · structure found",
+        _ => "Low · review required"
+    };
     public long? EntryOffset { get; init; }
     public byte[]? EntryFingerprint { get; init; }
     public VolumeLayout? Volume { get; set; }
@@ -61,6 +73,8 @@ public sealed class ScanResult
     public List<RecoveryItem> Items { get; } = [];
     public List<string> Warnings { get; } = [];
     public List<VolumeLayout> Volumes { get; } = [];
+    public List<ByteRange> BadRanges { get; } = [];
+    public List<Partition> LostPartitions { get; } = [];
     public long VolumeOffset { get; set; }
     public long VolumeLength { get; set; }
     public long SourceLength { get; set; }
@@ -70,6 +84,7 @@ public sealed class ScanResult
     public int ClusterSize { get; set; }
     public string FileSystem { get; set; } = "Unknown";
     public bool Cancelled { get; set; }
+    public bool InProgress { get; init; }
 }
 public sealed record RecoveryOutcome(int Saved, int Failed, bool Cancelled, string Folder, List<string> Errors);
 
@@ -89,6 +104,12 @@ public static class Categories
         foreach (var ext in extensions.Split(' ')) Types["." + ext] = type;
     }
     public static FileCategory Of(string name) => Types.GetValueOrDefault(System.IO.Path.GetExtension(name), FileCategory.Other);
+    public static string ExtensionOf(string name) => System.IO.Path.GetExtension(name).ToLowerInvariant();
+    public static string FormatOf(string name)
+    {
+        string extension = ExtensionOf(name);
+        return extension.Length == 0 ? "No extension" : new string(extension[1..].Select(c => char.IsControl(c) ? '_' : c).ToArray()).ToUpperInvariant();
+    }
     public static string Size(long value)
     {
         double size = value;

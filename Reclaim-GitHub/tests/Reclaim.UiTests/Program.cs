@@ -17,6 +17,24 @@ internal static partial class Program
         if (args.Contains("--buttons")) { ButtonChecks(); return; }
         string image = Path.GetFullPath(args.Length > 0 ? args[0] : "artifacts/tests/sample-ntfs.img");
         var scan = RecoveryEngine.Scan(new(image, true), ScanMode.Deep, null, CancellationToken.None);
+        int renderTools = Array.IndexOf(args, "--render-tools");
+        if (renderTools >= 0 && renderTools + 1 < args.Length)
+        {
+            using var tools = new RecoveryTools(scan.Source, scan, scan.Items.First(x => x.CanRecover)) { Opacity = 0, ShowInTaskbar = false }; tools.Show(); Application.DoEvents(); tools.PerformLayout();
+            var tabs = tools.Controls.OfType<TabControl>().Single();
+            Directory.CreateDirectory(args[renderTools + 1]);
+            for (int i = 0; i < 3; i++)
+            {
+                tabs.SelectedIndex = i; tools.PerformLayout(); Application.DoEvents(); tools.Refresh();
+                using var bitmap = new Bitmap(tools.ClientSize.Width, tools.ClientSize.Height);
+                using (var canvas = Graphics.FromImage(bitmap))
+                {
+                    IntPtr dc = canvas.GetHdc(); try { if (!PrintWindow(tools.Handle, dc, 3)) throw new Exception("Tools window did not render."); } finally { canvas.ReleaseHdc(dc); }
+                }
+                bitmap.Save(Path.Combine(args[renderTools + 1], "tools-" + i + ".png"));
+            }
+            return;
+        }
         if (args.Contains("--layout")) { LayoutChecks(scan); return; }
         using var form = new MainForm();
         _ = form.Handle; form.LoadPreview(scan); form.PerformLayout();
@@ -46,7 +64,9 @@ internal static partial class Program
         form.Size = form.MinimumSize; form.PerformLayout();
         Check(gallery.Width > 900 && gallery.Height > 200, "Large inline previews use the full workspace at minimum window size");
         GalleryChecks(form, gallery, scan);
-        Console.WriteLine("15 gallery workflow checks passed. No live drive was scanned and no window was opened.");
+        TypeFilterChecks(scan);
+        AdvancedUiChecks(scan);
+        Console.WriteLine("15 gallery workflow checks passed. Only synthetic images were read; temporary invisible test windows were closed.");
         if (args.Contains("--browser")) BrowserChecks(image, scan);
     }
     private static T Field<T>(object o, string name) => (T)o.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(o)!;
